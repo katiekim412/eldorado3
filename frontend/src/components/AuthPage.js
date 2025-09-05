@@ -27,7 +27,7 @@ const AuthPage = ({ onLogin }) => {
         setIsLoading(true);
         try {
             // 회원가입 API 호출
-            const response = await fetch('/api/Signup', {
+            const response = await fetch('/api/api/api/api/signup', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({ nickname, id, password })
@@ -56,7 +56,7 @@ const AuthPage = ({ onLogin }) => {
         setIsLoading(true);
         try {
             // 로그인 API 호출
-            const response = await fetch('/api/Login', {
+            const response = await fetch('/api/login', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({ id, password })

@@ -1,57 +1,80 @@
+// /login/index.js
 const { MongoClient } = require('mongodb');
-const uri = process.env.MONGO_URI;
 
-// MongoClient 인스턴스를 함수 밖에 생성하여 연결을 재사용합니다.
-const client = new MongoClient(uri);
+const uri = process.env.MONGO_URI;
+const DB_NAME = process.env.MONGO_DB || 'users';
+const COLL = process.env.MONGO_COLLECTION || 'userinfo';
+
+// 모듈 전역 재사용 (함수 콜드스타트 이후에도 유지)
+let client;
+let db;
 
 module.exports = async function (context, req) {
-    context.log('Login function processed a request.');
+  context.log('[login] function invoked');
 
-    const { id, password } = req.body;
-
-    if (!id || !password) {
-        context.res = {
-            status: 400,
-            body: { error: 'ID and password are required.' }
-        };
-        return;
+  try {
+    // 0) 환경변수 확인
+    if (!uri) {
+      context.log.error('MONGO_URI is missing');
+      context.res = { status: 500, body: { ok: false, error: 'SERVER_MISCONFIGURED' } };
+      return;
     }
 
-    try {
-        // DB 연결이 없을 때만 새로 연결합니다.
-        if (!client.topology || !client.topology.isConnected()) {
-            await client.connect();
-        }
-
-        const database = client.db("users"); // 'users' 데이터베이스 사용
-        const collection = database.collection("userinfo");
-
-        // 아이디로 사용자 찾기
-        const user = await collection.findOne({ id: id });
-
-        // 사용자가 없거나 비밀번호가 틀린 경우
-        if (!user || user.password !== password) {
-            context.res = {
-                status: 401, // 401: Unauthorized (인증 실패)
-                body: { error: '아이디 또는 비밀번호가 올바르지 않습니다.' }
-            };
-            return;
-        }
-
-        // 로그인 성공: 사용자 정보에서 비밀번호를 제외하고 반환합니다.
-        context.res = {
-            status: 200,
-            body: {
-                id: user.id,
-                nickname: user.nickname
-            }
-        };
-
-    } catch (error) {
-        context.log.error(error);
-        context.res = {
-            status: 500,
-            body: { error: 'Server error during login.' }
-        };
+    // 1) Mongo 연결 (v6: connect는 idempotent)
+    if (!client) {
+      client = new MongoClient(uri);
     }
+    if (!db) {
+      await client.connect();
+      db = client.db(DB_NAME);
+      context.log(`[login] connected to MongoDB db=${DB_NAME}`);
+    }
+
+    // 2) 입력 파싱 (email 또는 id 지원)
+    const body = req.body || {};
+    const emailOrId = (body.email || body.id || '').toString().trim();
+    const password = (body.password || '').toString().trim();
+
+    if (!emailOrId || !password) {
+      context.res = { status: 400, body: { ok: false, error: 'MISSING_CREDENTIALS' } };
+      return;
+    }
+
+    // 3) 사용자 조회 (email 또는 id 어느 컬럼에 저장되어 있든 잡기)
+    const collection = db.collection(COLL);
+    const user = await collection.findOne({
+      $or: [{ email: emailOrId }, { id: emailOrId }]
+    });
+
+    // 4) 인증
+    if (!user) {
+      context.res = { status: 401, body: { ok: false, error: 'INVALID_CREDENTIALS' } };
+      return;
+    }
+
+    // TODO(보안): 실제 운영에서는 bcrypt 사용 권장
+    // const bcrypt = require('bcryptjs');
+    // const ok = await bcrypt.compare(password, user.passwordHash);
+    // if (!ok) { ... }
+
+    if (user.password !== password) {
+      context.res = { status: 401, body: { ok: false, error: 'INVALID_CREDENTIALS' } };
+      return;
+    }
+
+    // 5) 성공 응답 (민감정보 제외)
+    context.res = {
+      status: 200,
+      body: {
+        ok: true,
+        user: {
+          email: user.email ?? user.id, // email이 없으면 id 반환
+          nickname: user.nickname || ''
+        }
+      }
+    };
+  } catch (err) {
+    context.log.error('[login] error:', err);
+    context.res = { status: 500, body: { ok: false, error: 'SERVER_ERROR' } };
+  }
 };
