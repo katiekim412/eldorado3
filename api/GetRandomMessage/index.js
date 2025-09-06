@@ -1,72 +1,102 @@
-const { MongoClient } = require('mongodb');
+// GetRandomMessage/index.js
+// CommonJS 기준
 
-// DB 연결 문자열은 Azure Portal의 '구성(Configuration)' -> '응용 프로그램 설정'에
-// MONGO_URI 라는 이름으로 저장해야 합니다. 코드에 직접 노출하지 않습니다.
-const uri = process.env.MONGO_URI;
+const { MongoClient, ServerApiVersion } = require('mongodb');
 
-// MongoClient 인스턴스를 함수 밖에 생성하여 연결을 재사용합니다.
-const client = new MongoClient(uri);
+const uri = process.env.MONGODB_URI;
+console.log('MONGODB_URI exists?', typeof uri, !!uri);
+if (!uri || typeof uri !== 'string') {
+  throw new Error('MONGODB_URI env not set (check key name and local.settings.json)');
+}
+
+// Cosmos for Mongo 포함 최신 드라이버에 맞춘 옵션(안전 권장)
+const client = new MongoClient(uri, {
+  serverApi: { version: ServerApiVersion.v1, strict: true, deprecationErrors: true }
+});
+
+// 함수 인스턴스 생명주기 동안 재사용
+let connected = false;
 
 module.exports = async function (context, req) {
-    context.log('JavaScript HTTP trigger function processed a request.');
-
-    const mood = req.query.mood;
-
-    if (!mood || (mood !== 'good' && mood !== 'bad')) {
-        context.res = {
-            status: 400,
-            body: { error: 'A valid mood (good or bad) is required.' }
-        };
-        return;
+  try {
+    // 최초 1회만 connect + ping
+    if (!connected) {
+      await client.connect();
+      await client.db('admin').command({ ping: 1 });
+      connected = true;
+      context.log('MongoDB connection established (ping ok)');
     }
 
+    // mood는 query 또는 body에서 허용
+    const mood = (req.query && req.query.mood) || (req.body && req.body.mood);
+    if (!mood || (mood !== 'good' && mood !== 'bad')) {
+      context.res = {
+        status: 400,
+        body: { error: 'A valid mood (good or bad) is required.' }
+      };
+      return;
+    }
+
+    const db = client.db('wisesaying'); // 실제 DB 이름 사용
+    const collectionName = mood === 'good' ? 'emotion_good' : 'emotion_bad';
+    const col = db.collection(collectionName);
+
+    // 먼저 $sample 시도 → Cosmos/버전 이슈로 미지원일 경우 skip로 폴백
+    let doc = null;
+
     try {
-      
-        await client.connect();
-        const database = client.db("wisesaying");
-        
-        const collectionName = mood === 'good' ? 'emotion_good' : 'emotion_bad';
-        const collection = database.collection(collectionName);
+      const sampled = await col
+        .aggregate([{ $sample: { size: 1 } }, { $project: { _id: 0, content: 1 } }])
+        .toArray();
 
-        // 1. 컬렉션의 전체 문서 수를 가져옵니다.
-        const count = await collection.countDocuments();
+      if (sampled.length > 0) {
+        doc = sampled[0];
+      }
+    } catch (aggErr) {
+      // 폴백: estimatedDocumentCount → skip/limit
+      context.log(`[INFO] $sample not available, fallback to skip: ${aggErr.message}`);
 
-        if (count === 0) {
-            context.res = {
-                status: 404,
-                body: { content: '이런, 지금은 드릴 메시지가 없네요.' }
-            };
-            return;
-        }
-
-        // 2. 0부터 (count - 1) 사이의 랜덤한 인덱스를 생성합니다.
-        const randomIndex = Math.floor(Math.random() * count);
-        context.log(`[DEBUG] Total documents: ${count}, Random index generated: ${randomIndex}`);
-
-        // 3. 랜덤 인덱스만큼 건너뛰고 1개의 문서를 가져옵니다.
-        const randomItems = await collection.find().skip(randomIndex).limit(1).toArray();
-        
-        if (randomItems.length === 0) {
-            // 이론적으로는 이 오류가 발생하면 안 되지만, 안전장치로 추가합니다.
-            context.res = {
-                status: 404,
-                body: { content: '메시지를 찾는 데 실패했어요. 다시 시도해주세요.' }
-            };
-            return;
-        }
-
-        // 성공 응답
+      const count = await col.estimatedDocumentCount(); // countDocuments보다 가벼움
+      if (!count) {
         context.res = {
-            body: { content: randomItems[0].content }
+          status: 404,
+          body: { content: '이런, 지금은 드릴 메시지가 없네요.' }
         };
+        return;
+      }
 
+      const randomIndex = Math.floor(Math.random() * count);
+      context.log(`[DEBUG] Total documents: ${count}, Random index: ${randomIndex}`);
 
-    } catch (error) {
-        context.log.error(error);
-        context.res = {
-            status: 500,
-            body: { error: 'Server error while fetching message.' }
-        };
-    } 
+      const arr = await col
+        .find({}, { projection: { _id: 0, content: 1 } })
+        .skip(randomIndex)
+        .limit(1)
+        .toArray();
+
+      if (arr.length > 0) {
+        doc = arr[0];
+      }
+    }
+
+    if (!doc) {
+      context.res = {
+        status: 404,
+        body: { content: '메시지를 찾는 데 실패했어요. 다시 시도해주세요.' }
+      };
+      return;
+    }
+
+    context.res = {
+      status: 200,
+      body: { content: doc.content }
+    };
+  } catch (error) {
+    context.log.error(error);
+    context.res = {
+      status: 500,
+      body: { error: 'Server error while fetching message.' }
+    };
+  }
+  // 주의: 여기서 client.close() 하지 마세요. (연결 재사용)
 };
-

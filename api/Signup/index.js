@@ -1,8 +1,13 @@
 const { MongoClient } = require('mongodb');
-const uri = process.env.MONGO_URI;
 
-// MongoClient 인스턴스를 함수 밖에 생성하여 연결을 재사용합니다.
+const uri = process.env.MONGODB_URI;  // 코드가 실제로 이 키를 보는지 확인
+console.log('MONGODB_URI exists?', typeof uri, !!uri);
+if (!uri || typeof uri !== 'string') {
+  throw new Error('MONGODB_URI env not set (check key name and local.settings.json)');
+}
+
 const client = new MongoClient(uri);
+
 
 module.exports = async function (context, req) {
     context.log('Signup function processed a request.');

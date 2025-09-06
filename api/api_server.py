@@ -120,7 +120,53 @@ def api_debug_crawler():
         return Response(text, mimetype="text/plain; charset=utf-8")
     except Exception as e:
         return jsonify({"error": f"{type(e).__name__}: {e}", "path": str(p)}), 500
-        
+
+# ---------------------------
+# 루트/파비콘(브라우저 편의)
+# ---------------------------
+@app.get("/")
+def root():
+    # 브라우저로 열면 간단한 안내 HTML, API 클라이언트면 JSON
+    info = {
+        "service": "eldorado-api",
+        "status": "ok",
+        "endpoints": [
+            "/api/health",
+            "/api/news?date=YYYYMMDD",
+            "/api/signup",
+            "/api/login",
+            "/api/_echo",
+            "/api/debug/crawler",
+        ],
+    }
+    accept = request.headers.get("accept", "")
+    if "text/html" in accept:
+        links = "\n".join(f'<li><a href="{p}">{p}</a></li>' for p in info["endpoints"])
+        return (
+            f"""<!doctype html>
+<html lang="ko"><meta charset="utf-8">
+<title>Eldorado API</title>
+<body style="font-family:system-ui,Segoe UI,Roboto,Apple SD Gothic Neo,AppleGothic,sans-serif;line-height:1.5;padding:24px">
+  <h1>🚀 Eldorado API 서버</h1>
+  <p>서버가 실행 중입니다. 아래 링크로 바로 확인해 보세요.</p>
+  <ul>{links}</ul>
+  <small>TIP: API 클라이언트로 호출하면 JSON이 반환됩니다.</small>
+</body></html>""",
+            200,
+            {"Content-Type": "text/html; charset=utf-8"},
+        )
+    return jsonify(info)
+
+@app.get("/api")
+def api_index():
+    # /api로 접근했을 때 간단한 인덱스
+    return jsonify({"ok": True, "message": "Eldorado API root", "see": ["/api/health", "/api/news"]})
+
+@app.get("/favicon.ico")
+def favicon():
+    # 파비콘 파일이 없다면 204로 조용히 응답
+    return ("", 204)
+
 # ---------------------------
 # 에러 핸들러 (API는 HTML 대신 JSON 응답)
 # ---------------------------
@@ -234,4 +280,5 @@ def api_login():
 # ---------------------------
 if __name__ == "__main__":
     # 루트에서 실행:  python api\api_server.py
+    # 외부에서 접속 필요하면 host="0.0.0.0" 로 변경
     app.run(host="127.0.0.1", port=5000, debug=True)
